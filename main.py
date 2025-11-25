@@ -1,7 +1,14 @@
 # clustering
-# python .\main.py --mode cluster --arch vgg16 --pooling netvlad --num_clusters 64 --dataset zoo5 --dataPath .
+# python .\main.py --mode cluster --arch vgg16 --pooling netvlad --num_clusters 32 --dataset zoo5 --dataPath .
 # training
+# python .\main.py --mode train --dataset zoo5 --dataPath . --batchSize 1 --num_clusters 32 --runsPath .\runs --cachePath .\cache
 # python .\main.py --mode train --arch vgg16 --pooling netvlad --num_clusters 64 --dataset zoo5 --dataPath . --runsPath .\runs --cachePath .\cache
+# python .\main.py --mode train --dataset zoo5 --dataPath . --batchSize 1 --cacheBatchSize 8 --runsPath .\runs --cachePath .\cache
+# python .\main.py --mode train --dataset zoo5 --arch alexnet --pooling netvlad --num_clusters 32 --batchSize 1 ...
+# resume
+# python .\main.py --mode train --dataset zoo5 --dataPath . --resume .\runs\Nov25_14-46-48_vgg16_netvlad --ckpt best
+# evaluation
+# python .\main.py --mode test --dataset zoo5 --dataPath . --resume .\runs\Nov25_14-46-48_vgg16_netvlad --ckpt best --split val
 from __future__ import print_function
 import argparse
 from math import log10, ceil
@@ -625,8 +632,11 @@ if __name__ == "__main__":
         # write checkpoints in logdir
         logdir = writer.file_writer.get_logdir()
         opt.savePath = join(logdir, opt.savePath)
-        if not opt.resume:
-            makedirs(opt.savePath)
+        # ensure savePath exists whether or not we're resuming
+        try:
+            makedirs(opt.savePath, exist_ok=True)
+        except Exception:
+            pass
 
         with open(join(opt.savePath, 'flags.json'), 'w') as f:
             f.write(json.dumps(
