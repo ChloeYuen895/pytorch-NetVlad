@@ -3,3 +3,6 @@ places365_val/
 pretrained/
 zoo5/
 places365_val.zip
+cache/
+centroids/
+runs/

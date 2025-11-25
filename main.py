@@ -1,3 +1,7 @@
+# clustering
+# python .\main.py --mode cluster --arch vgg16 --pooling netvlad --num_clusters 64 --dataset zoo5 --dataPath .
+# training
+# python .\main.py --mode train --arch vgg16 --pooling netvlad --num_clusters 64 --dataset zoo5 --dataPath . --runsPath .\runs --cachePath .\cache
 from __future__ import print_function
 import argparse
 from math import log10, ceil
@@ -58,6 +62,8 @@ parser.add_argument('--evalEvery', type=int, default=1,
 parser.add_argument('--patience', type=int, default=10, help='Patience for early stopping. 0 is off.')
 parser.add_argument('--dataset', type=str, default='pittsburgh', 
     help='Dataset to use', choices=['pittsburgh', 'zoo5'])
+parser.add_argument('--dry-run', action='store_true', help='Inspect dataset layout and exit (prints counts and missing files)')
+parser.add_argument('--fix-missing', action='store_true', help='When used with --dry-run, attempt to locate missing files and copy them into expected locations')
 parser.add_argument('--arch', type=str, default='vgg16', 
         help='basenetwork to use', choices=['vgg16', 'alexnet'])
 parser.add_argument('--vladv2', action='store_true', help='Use VLAD v2')
@@ -87,6 +93,11 @@ def train(epoch):
         print('====> Building Cache')
         model.eval()
         train_set.cache = join(opt.cachePath, train_set.whichSet + '_feat_cache.hdf5')
+        # ensure cache directory exists
+        try:
+            makedirs(opt.cachePath, exist_ok=True)
+        except Exception:
+            pass
         with h5py.File(train_set.cache, mode='w') as h5: 
             pool_size = encoder_dim
             if opt.pooling.lower() == 'netvlad': pool_size *= opt.num_clusters
@@ -339,6 +350,113 @@ if __name__ == "__main__":
             dataset.root_dir = os.path.abspath(opt.dataPath)
     else:
         raise Exception('Unknown dataset')
+
+    # Dry-run: inspect dataset layout and report counts / missing files, then exit
+    if opt.dry_run:
+        struct = None
+        if hasattr(dataset, '_build_struct'):
+            try:
+                struct = dataset._build_struct()
+            except Exception as e:
+                print('Failed to build struct using dataset._build_struct():', e)
+        if struct is None and hasattr(dataset, 'get_whole_training_set'):
+            try:
+                tmp = dataset.get_whole_training_set(onlyDB=True)
+                struct = tmp.dbStruct
+            except Exception as e:
+                print('Failed to build struct using get_whole_training_set():', e)
+
+        if struct is None:
+            print('Dry-run not supported for this dataset module')
+            raise SystemExit(0)
+
+        # summarize
+        db = list(struct.dbImage)
+        q = list(struct.qImage)
+        print('Dry-run dataset summary')
+        print('  db images:', len(db))
+        print('  query images:', len(q))
+
+        from collections import Counter
+        def cls_from_path(p):
+            p2 = p.replace('\\', '/').split('/')
+            if len(p2) >= 2:
+                if p2[0] in ('train', 'val'):
+                    return p2[1]
+                return p2[-2]
+            return ''
+
+        db_counts = Counter([cls_from_path(x) for x in db])
+        q_counts = Counter([cls_from_path(x) for x in q])
+        print('  classes found:', len(set(list(db_counts.keys()) + list(q_counts.keys()))))
+        print('  per-class (db / query) sample:')
+        for cls in sorted(list(set(list(db_counts.keys()) + list(q_counts.keys()))))[:30]:
+            print(f'    {cls}: {db_counts.get(cls,0)} / {q_counts.get(cls,0)}')
+
+        # check missing files (try several resolution strategies)
+        missing = []
+        candidates = db + q
+        for rel in candidates:
+            paths_to_try = [rel, os.path.join(opt.dataPath, rel), os.path.join(os.getcwd(), rel)]
+            found = False
+            for p in paths_to_try:
+                if os.path.exists(p):
+                    found = True
+                    break
+            if not found:
+                # try basename search
+                base = os.path.basename(rel)
+                for r, d, files in os.walk(opt.dataPath):
+                    if base in files:
+                        found = True
+                        break
+                if not found:
+                    missing.append(rel)
+
+        print('  missing files:', len(missing))
+        if missing:
+            print('  examples:')
+            for m in missing[:50]:
+                print('   ', m)
+
+        if opt.fix_missing and missing:
+            import shutil
+            print('\nAttempting to auto-locate and copy missing files...')
+            fixed = 0
+            for rel in missing:
+                base = os.path.basename(rel)
+                found = None
+                for r, d, files in os.walk(opt.dataPath):
+                    if base in files:
+                        found = os.path.join(r, base)
+                        break
+                if not found:
+                    # try searching under current working directory as fallback
+                    for r, d, files in os.walk(os.getcwd()):
+                        if base in files:
+                            found = os.path.join(r, base)
+                            break
+                if found:
+                    target = os.path.join(opt.dataPath, rel)
+                    target_dir = os.path.dirname(target)
+                    try:
+                        os.makedirs(target_dir, exist_ok=True)
+                        if os.path.exists(target):
+                            print('  target already exists, skipping:', target)
+                        else:
+                            shutil.copy2(found, target)
+                            fixed += 1
+                            print('  copied', found, '->', target)
+                    except Exception as e:
+                        print('  failed to copy', found, '->', target, ':', e)
+                else:
+                    print('  could not locate file for', rel)
+
+            print(f'Finished fixing: copied {fixed} files')
+            if fixed > 0:
+                print('You can re-run with --dry-run to verify missing files or proceed to cluster/train.')
+
+        raise SystemExit(0)
 
     cuda = not opt.nocuda
     if cuda and not torch.cuda.is_available():

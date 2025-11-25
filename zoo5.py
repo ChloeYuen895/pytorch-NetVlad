@@ -202,6 +202,33 @@ class QueryDatasetFromStruct(data.Dataset):
         self.nNegSample = nNegSample
         self.nNeg = nNeg
 
+        # Build a mapping from relative paths in dbStruct to actual filesystem paths.
+        # If a file isn't found at the expected location, try to locate it by basename.
+        self.full_paths = {}
+        all_rel = list(self.dbStruct.dbImage) + list(self.dbStruct.qImage)
+        for rel in all_rel:
+            candidate = join(root_dir, rel)
+            if os.path.exists(candidate):
+                self.full_paths[rel] = candidate
+                continue
+            # try normalizing separators
+            candidate2 = join(root_dir, rel.replace('/', os.sep).replace('\\', os.sep))
+            if os.path.exists(candidate2):
+                self.full_paths[rel] = candidate2
+                continue
+            # fallback: search by basename under root_dir (first match)
+            base = os.path.basename(rel)
+            found = None
+            for r, d, files in os.walk(root_dir):
+                if base in files:
+                    found = os.path.join(r, base)
+                    break
+            if found:
+                self.full_paths[rel] = found
+            else:
+                # leave missing; will handle at access time
+                self.full_paths[rel] = None
+
         knn = NearestNeighbors(n_jobs=-1)
         knn.fit(self.dbStruct.utmDb)
 
@@ -254,8 +281,19 @@ class QueryDatasetFromStruct(data.Dataset):
             negIndices = negSample[negNN].astype(np.int32)
             self.negCache[index] = negIndices
 
-        query = Image.open(join(root_dir, self.dbStruct.qImage[index])).convert('RGB')
-        positive = Image.open(join(root_dir, self.dbStruct.dbImage[posIndex])).convert('RGB')
+        # resolve filesystem paths for query and positive
+        q_rel = self.dbStruct.qImage[index]
+        p_rel = self.dbStruct.dbImage[posIndex]
+        q_path = self.full_paths.get(q_rel)
+        p_path = self.full_paths.get(p_rel)
+        if not q_path or not os.path.exists(q_path):
+            print('Warning: missing query image, skipping sample:', q_rel)
+            return None
+        if not p_path or not os.path.exists(p_path):
+            print('Warning: missing positive image, skipping sample:', p_rel)
+            return None
+        query = Image.open(q_path).convert('RGB')
+        positive = Image.open(p_path).convert('RGB')
 
         if self.input_transform:
             query = self.input_transform(query)
@@ -263,11 +301,18 @@ class QueryDatasetFromStruct(data.Dataset):
 
         negatives = []
         for negIndex in negIndices:
-            negative = Image.open(join(root_dir, self.dbStruct.dbImage[negIndex])).convert('RGB')
+            neg_rel = self.dbStruct.dbImage[negIndex]
+            neg_path = self.full_paths.get(neg_rel)
+            if not neg_path or not os.path.exists(neg_path):
+                # skip missing negative
+                continue
+            negative = Image.open(neg_path).convert('RGB')
             if self.input_transform:
                 negative = self.input_transform(negative)
             negatives.append(negative)
-
+        if len(negatives) == 0:
+            # no valid negatives found for this query, skip sample
+            return None
         negatives = __import__('torch').stack(negatives, 0)
         return query, positive, negatives, [index, posIndex]+negIndices.tolist()
 
