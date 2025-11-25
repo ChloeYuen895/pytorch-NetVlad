@@ -48,7 +48,8 @@ parser.add_argument('--dataPath', type=str, default='/nfs/ibrahimi/data/', help=
 parser.add_argument('--runsPath', type=str, default='/nfs/ibrahimi/runs/', help='Path to save runs to.')
 parser.add_argument('--savePath', type=str, default='checkpoints', 
         help='Path to save checkpoints to in logdir. Default=checkpoints/')
-parser.add_argument('--cachePath', type=str, default=environ['TMPDIR'], help='Path to save cache to.')
+cache_default = environ.get('TMPDIR', environ.get('TMP', environ.get('TEMP', '.')))
+parser.add_argument('--cachePath', type=str, default=cache_default, help='Path to save cache to.')
 parser.add_argument('--resume', type=str, default='', help='Path to load checkpoint from, for resuming training or testing.')
 parser.add_argument('--ckpt', type=str, default='latest', 
         help='Resume from latest or best checkpoint.', choices=['latest', 'best'])
@@ -56,7 +57,7 @@ parser.add_argument('--evalEvery', type=int, default=1,
         help='Do a validation set run, and save, every N epochs.')
 parser.add_argument('--patience', type=int, default=10, help='Patience for early stopping. 0 is off.')
 parser.add_argument('--dataset', type=str, default='pittsburgh', 
-        help='Dataset to use', choices=['pittsburgh'])
+    help='Dataset to use', choices=['pittsburgh', 'zoo5'])
 parser.add_argument('--arch', type=str, default='vgg16', 
         help='basenetwork to use', choices=['vgg16', 'alexnet'])
 parser.add_argument('--vladv2', action='store_true', help='Use VLAD v2')
@@ -232,6 +233,11 @@ def get_clusters(cluster_set):
     nDescriptors = 50000
     nPerImage = 100
     nIm = ceil(nDescriptors/nPerImage)
+    # guard against empty or very small datasets
+    if len(cluster_set) == 0:
+        raise SystemExit('No images found in training set for clustering. Check --dataset and --dataPath')
+    if nIm > len(cluster_set):
+        nIm = len(cluster_set)
 
     sampler = SubsetRandomSampler(np.random.choice(len(cluster_set), nIm, replace=False))
     data_loader = DataLoader(dataset=cluster_set, 
@@ -325,6 +331,12 @@ if __name__ == "__main__":
 
     if opt.dataset.lower() == 'pittsburgh':
         import pittsburgh as dataset
+    elif opt.dataset.lower() == 'zoo5':
+        import zoo5 as dataset
+        # Allow overriding the dataset root with --dataPath
+        if hasattr(dataset, 'root_dir'):
+            import os
+            dataset.root_dir = os.path.abspath(opt.dataPath)
     else:
         raise Exception('Unknown dataset')
 
